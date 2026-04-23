@@ -1,0 +1,86 @@
+import os
+import numpy as np
+import torch
+import torch.nn.functional as F
+from tkinter import Tk, Toplevel, Button, Label, filedialog
+from PIL import Image, ImageTk
+import torchvision.transforms as transforms
+from lib.pvt import PolypPVT
+device = torch.device('cpu')
+model = PolypPVT()
+state = torch.load(r"C:\Users\Administrator\Desktop\ploy2026\Polyp-PVT\PolypPVT.pth", map_location=device)
+model.load_state_dict(state)
+model.to(device)
+model.eval()
+transform = transforms.Compose([
+    transforms.Resize((352, 352)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406],
+                         [0.229, 0.224, 0.225])
+])
+def center_window(win, width, height):
+    screen_w = win.winfo_screenwidth()
+    screen_h = win.winfo_screenheight()
+    x = int((screen_w - width) / 2)
+    y = int((screen_h - height) / 2)
+    win.geometry(f"{width}x{height}+{x}+{y}")
+root = Tk()
+root.title("内窥镜下息肉定量检测系统v2.0")
+center_window(root, 800, 650)
+root.resizable(False, False)
+label_orig = Label(root, text="原始图像区域", width=60, height=25)
+label_orig.pack(pady=10)
+label_info_main = Label(root, text="请选择一张内窥镜图像进行分割")
+label_info_main.pack(pady=10)
+seg_window = None
+seg_label = None
+seg_info = None
+def run_inference():
+    global seg_window, seg_label, seg_info
+    path = filedialog.askopenfilename(
+        title="选择内窥镜图像",
+        filetypes=[("Image files", "*.jpg *.png *.bmp *.jpeg")]
+    )
+    if not path:
+        return
+    img = Image.open(path).convert("RGB")
+    w, h = img.size
+    input_img = transform(img).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        P1, P2 = model(input_img)
+        res = F.interpolate(P1 + P2, size=(h, w), mode="bilinear", align_corners=False)
+        res = res.sigmoid().cpu().numpy().squeeze()
+    mask = (res > 0.5).astype(np.uint8) * 255
+    mask_img = Image.fromarray(mask)
+    max_disp_width = 600
+    max_disp_height = 450
+    scale = min(max_disp_width / w, max_disp_height / h)
+    disp_w = int(w * scale)
+    disp_h = int(h * scale)
+    disp_orig = img.resize((disp_w, disp_h))
+    tk_orig = ImageTk.PhotoImage(disp_orig)
+    label_orig.configure(image=tk_orig)
+    label_orig.image = tk_orig
+    if seg_window is None or not seg_window.winfo_exists():
+        seg_window = Toplevel(root)
+        seg_window.title("息肉分割结果")
+        center_window(seg_window, 700, 650)
+        seg_window.resizable(False, False)
+        seg_label = Label(seg_window, text="分割结果区域", width=60, height=25)
+        seg_label.pack(pady=10)
+        seg_info = Label(seg_window, text="")
+        seg_info.pack(pady=10)
+    disp_mask = mask_img.resize((disp_w, disp_h))
+    tk_mask = ImageTk.PhotoImage(disp_mask)
+    seg_label.configure(image=tk_mask)
+    seg_label.image = tk_mask
+    polyp_pixels = mask.sum() / 255
+    total_pixels = w * h
+    ratio = polyp_pixels / total_pixels * 100
+    info_text = f"息肉面积像素: {int(polyp_pixels)}, 像素总数: {total_pixels}, 面积占比: {ratio:.2f}%"
+    seg_info.configure(text=info_text)
+    label_info_main.configure(text="当前图像: " + os.path.basename(path))
+button = Button(root, text="选择图片并自动分割", command=run_inference)
+button.pack(pady=10)
+root.mainloop()
